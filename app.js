@@ -161,6 +161,7 @@ async function join() {
     applyState(await rpc("join_room", { p_code: store.code, p_display_name: store.name.trim() || "Player", p_color: store.color }));
     await subscribe();
     startPolling();
+    startTicker();
   } catch (e) {
     store.error = friendly(e);
   }
@@ -246,6 +247,24 @@ function startPolling() {
 }
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+}
+
+// 1s countdown: decrements the on-screen timer without a full re-render; at 0,
+// asks the server to end the expired round (idempotent).
+let tickTimer = null, timeoutFired = false;
+function startTicker() {
+  if (tickTimer) return;
+  tickTimer = setInterval(() => {
+    if (store.timerLeft == null || !store.state) return;
+    store.timerLeft = Math.max(0, store.timerLeft - 1);
+    const el2 = document.getElementById("solveTimer");
+    if (el2) { el2.textContent = `⏱ ${store.timerLeft}s`; el2.classList.toggle("urgent", store.timerLeft <= 10); }
+    if (store.timerLeft <= 0 && !timeoutFired) {
+      timeoutFired = true;
+      rpc("end_round_if_expired", { p_room: room().id }).then(applyState).catch(() => {}).finally(() => { timeoutFired = false; });
+    }
+  }, 1000);
 }
 
 // Tab returns from background → snapshot + fresh channel immediately.
@@ -269,7 +288,8 @@ function onStateChanged() {
   const rid = r?.id || null;
   if (rid !== store.lastRoundId) {
     store.lastRoundId = rid;
-    store.solve = { attempts: 0, revealed: {}, marks: [], wrong: false, terminal: null };
+    store.solve = { attempts: 0, revealed: {}, marks: [], wrong: false, terminal: null, hintShown: false };
+    store.timerLeft = null;
   }
   if (room()?.status === "finished" && !store.celebrated) {
     store.celebrated = true;
@@ -722,7 +742,29 @@ function solvePanel() {
   const salt = r.id;
   const c = el("div", "card stack" + (store.solve.wrong ? " wrong" : ""));
 
+  // Category + countdown timer
+  const top = el("div", "solve-top");
+  if (r.category) top.append(el("span", "solve-cat", r.category.toUpperCase()));
+  top.append(el("span")); // spacer
+  if (r.seconds_left != null) {
+    store.timerLeft = r.seconds_left;            // re-sync from server each render
+    const t = el("span", "solve-timer"); t.id = "solveTimer"; t.textContent = `⏱ ${r.seconds_left}s`;
+    top.append(t);
+  }
+  c.append(top);
+
   c.append(el("div", "emoji-clue soft-fill", r.emojis || ""));
+
+  // Authored hint (curated rounds)
+  if (r.hint) {
+    if (store.solve.hintShown) {
+      c.append(el("div", "solve-hint", `💡 ${r.hint}`));
+    } else {
+      const hb = el("button", "hint-btn", "Need a hint?");
+      hb.onclick = () => { store.solve.hintShown = true; render(); };
+      c.append(hb);
+    }
+  }
 
   const slotRow = el("div", "slots");
   slots.forEach((len, i) => {

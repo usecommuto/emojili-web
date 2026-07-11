@@ -205,6 +205,14 @@ input {
 }
 .report-btn:disabled { color: var(--green); }
 
+/* Solve panel top row: category + countdown */
+.solve-top { display: flex; align-items: center; justify-content: space-between; }
+.solve-cat { font-size: 12px; font-weight: 800; letter-spacing: 2px; color: var(--accent); }
+.solve-timer { font-size: 13px; font-weight: 800; color: var(--muted); font-variant-numeric: tabular-nums; }
+.solve-timer.urgent { color: var(--danger); }
+.solve-hint { font-size: 13px; font-weight: 600; color: var(--accent); text-align: center; }
+.hint-btn { background: none; color: var(--muted); font-size: 13px; font-weight: 700; padding: 4px; display: block; margin: 0 auto; }
+
 /* Wait / status cards */
 .wait { text-align: center; }
 .wait .big-emoji { font-size: 46px; }
