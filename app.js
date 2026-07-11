@@ -13,14 +13,20 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 // ---- Avatar palette (offered to web joiners; mirrors the app accents) ----
 const AVATAR_COLORS = [0x6C5CE0, 0xF0A73B, 0x3FA36B, 0x5B8DEF, 0xC4536E, 0xE0679B, 0x36B0A6, 0xE8703A];
 
+// Canonical scoring constants — mirror RoomScoring (Swift) and the server RPCs.
+const ENCODER_POINTS_PER_SOLVER = 40;
+
 // =====================================================================
 // Grading — byte-for-byte match with PhraseSolver + HashedAnswer (Swift)
 // =====================================================================
 function normalizeWord(w) {
-  return w.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]/g, "");
+  return w.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 function rawWords(guess) {
-  return guess.split(" ").map((s) => s).filter((w) => normalizeWord(w) !== "");
+  // "&" becomes a standalone "and" WORD (with spaces) BEFORE splitting —
+  // exactly like the server's norm_phrase(replace(p,'&',' and ')). Splitting
+  // first would turn "AT&T" into one token while the server hashes three.
+  return guess.replace(/&/g, " and ").split(" ").filter((w) => normalizeWord(w) !== "");
 }
 async function sha256hex(str) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
@@ -135,7 +141,7 @@ async function join() {
   try {
     await ensureAuth();
     store.code = cleanCode(store.code);
-    store.state = await rpc("join_room", { p_code: store.code, p_display_name: store.name.trim() || "Player", p_color: store.color });
+    applyState(await rpc("join_room", { p_code: store.code, p_display_name: store.name.trim() || "Player", p_color: store.color }));
     await subscribe();
     startPolling();
   } catch (e) {
@@ -144,26 +150,46 @@ async function join() {
   store.busy = false; render();
 }
 
-let refreshFails = 0;
+let lastStateJson = "";
+function applyState(fresh) {
+  if (!fresh) return;
+  // Skip the full re-render when nothing changed (the 5s poll mostly no-ops) —
+  // keeps the DOM, focus, and keyboard stable on phones.
+  const s = JSON.stringify(fresh);
+  if (s === lastStateJson) return;
+  lastStateJson = s;
+  store.state = fresh;
+  onStateChanged();
+  render();
+}
+
 async function refresh() {
   const id = room()?.id;
   if (!id) return;
   try {
-    const fresh = await rpc("room_snapshot", { p_room: id });
-    refreshFails = 0;
-    if (fresh) { store.state = fresh; onStateChanged(); render(); }
-  } catch {
-    // Repeated failures = the room was deleted (host closed it).
-    // Stop polling a corpse and tell the player instead of hanging forever.
-    if (++refreshFails >= 3) {
-      refreshFails = 0;
+    applyState(await rpc("room_snapshot", { p_room: id }));
+  } catch (e) {
+    // Only an explicit server verdict means we're out of the room. Plain
+    // network errors (dead WiFi, suspended tab) just keep retrying — a 15s
+    // signal drop must NOT eject a live player.
+    const roomGone = e?.code || /not a member|room not found/i.test(e?.message || "");
+    if (roomGone) {
       stopPolling();
       if (store.channel) { supabase.removeChannel(store.channel); store.channel = null; }
       store.state = null; store.lastRoundId = null; store.celebrated = false;
+      lastStateJson = "";
       store.error = "That room was closed by the host.";
       render();
     }
   }
+}
+
+// Coalesce realtime event bursts (one advance touches 3+ tables) into a single
+// snapshot fetch.
+let bumpTimer = null;
+function bumpRefresh() {
+  clearTimeout(bumpTimer);
+  bumpTimer = setTimeout(refresh, 150);
 }
 
 async function subscribe() {
@@ -171,7 +197,7 @@ async function subscribe() {
   if (!id) return;
   if (store.channel) { await supabase.removeChannel(store.channel); store.channel = null; }
   const ch = supabase.channel(`room-${id}-${Date.now()}`);
-  const bump = () => refresh();
+  const bump = bumpRefresh;
   ch.on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: `id=eq.${id}` }, bump)
     .on("postgres_changes", { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${id}` }, bump)
     .on("postgres_changes", { event: "*", schema: "public", table: "room_rounds", filter: `room_id=eq.${id}` }, bump)
@@ -206,8 +232,13 @@ function stopPolling() {
 }
 
 // Tab returns from background → snapshot + fresh channel immediately.
+// (visibilitychange/focus/pageshow fire near-simultaneously — throttle so one
+// return doesn't triple-rebuild the channel.)
+let lastVisible = 0;
 async function onVisible() {
   if (document.visibilityState !== "visible" || !store.state) return;
+  if (Date.now() - lastVisible < 1500) return;
+  lastVisible = Date.now();
   await refresh();
   await subscribe();
 }
@@ -221,7 +252,7 @@ function onStateChanged() {
   const rid = r?.id || null;
   if (rid !== store.lastRoundId) {
     store.lastRoundId = rid;
-    store.solve = { attempts: 0, revealed: {}, marks: [], wrong: false };
+    store.solve = { attempts: 0, revealed: {}, marks: [], wrong: false, terminal: null };
   }
   if (room()?.status === "finished" && !store.celebrated) {
     store.celebrated = true;
@@ -238,7 +269,7 @@ async function submitSolve(solved, guesses) { await act(() => rpc("submit_room_s
 
 async function act(work) {
   store.busy = true; store.error = ""; render();
-  try { const s = await work(); if (s) { store.state = s; onStateChanged(); } }
+  try { applyState(await work()); }
   catch (e) { store.error = friendly(e); }
   store.busy = false; render();
 }
@@ -248,8 +279,27 @@ async function leave() {
   try { if (room()?.id) await rpc("leave_room", { p_room: room().id }); } catch {}
   if (store.channel) { await supabase.removeChannel(store.channel); store.channel = null; }
   store.state = null; store.lastRoundId = null; store.celebrated = false;
+  lastStateJson = "";
   render();
 }
+
+// Tab actually closing/navigating away (NOT a background switch — visibility
+// handles that): leave the room so a ghost member can't block auto-end forever.
+window.addEventListener("pagehide", (e) => {
+  if (e.persisted || !store.state) return;   // bfcache suspend = they may come back
+  const id = room()?.id;
+  const token = (() => {
+    try { return JSON.parse(localStorage.getItem("emojili-web-auth"))?.access_token; }
+    catch { return null; }
+  })();
+  if (!id || !token) return;
+  fetch(`${SUPABASE_URL}/rest/v1/rpc/leave_room`, {
+    method: "POST",
+    keepalive: true,   // survives page teardown
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ p_room: id }),
+  }).catch(() => {});
+});
 
 // =====================================================================
 // Views
@@ -389,8 +439,10 @@ function lobbyScreen() {
   s.append(el("div", "spacer"));
 
   if (isHost()) {
-    const btn = el("button", "btn-primary", store.busy ? "Starting…" : "Start game");
-    btn.disabled = store.busy || members().length < 1;
+    const enough = members().length >= 2;
+    const btn = el("button", "btn-primary",
+      store.busy ? "Starting…" : (enough ? "Start game" : "Waiting for players…"));
+    btn.disabled = store.busy || !enough;
     btn.onclick = startGame;
     s.append(btn);
   } else {
@@ -545,7 +597,7 @@ function endedPanel() {
       row.append(avatarEl(enc.display_name, enc.avatar_color, 34));
       row.append(el("span", "name", enc.display_name + " ✍️"));
       const right = el("span", "round-result");
-      right.textContent = `+${40 * solvers} encoder`;
+      right.textContent = `+${ENCODER_POINTS_PER_SOLVER * solvers} encoder`;
       row.append(right);
       list.append(row);
     }
@@ -600,6 +652,23 @@ function authorPanel() {
 
 // Solver — on-device hashed grading, identical to SolvePanel.
 function solvePanel() {
+  // A terminal result we still owe the server: spinner while sending, Retry if
+  // the RPC failed (we're only here because no solve row exists yet).
+  const t = store.solve.terminal;
+  if (t) {
+    const c = el("div", "card wait");
+    if (store.busy) {
+      const sp = el("div", "spinner"); sp.style.margin = "0 auto"; c.append(sp);
+      c.append(el("div", "sub", "Sending your result…"));
+    } else {
+      c.append(el("div", "title", "Couldn't reach the server"));
+      const btn = el("button", "btn-primary", "Retry");
+      btn.style.marginTop = "12px";
+      btn.onclick = () => submitSolve(t.solved, t.guesses);   // idempotent server-side
+      c.append(btn);
+    }
+    return c;
+  }
   const r = round();
   const slots = r.word_lengths || [];
   const wh = r.word_hashes || [];
@@ -638,7 +707,7 @@ function solvePanel() {
 
   let inFlight = false;   // guard: Enter-key repeats can't double-submit
   const submit = async () => {
-    if (inFlight) return;
+    if (inFlight || store.solve.terminal || store.solve.attempts >= 6) return;
     const g = (store.solve.draft || "").trim();
     if (!g || !wh.length) return;
     inFlight = true;
@@ -648,12 +717,18 @@ function solvePanel() {
     store.solve.draft = "";
     correct.forEach((pos) => { if (pos < raw.length) store.solve.revealed[pos] = raw[pos]; });
     const solvedAll = slots.length > 0 && Object.keys(store.solve.revealed).length === slots.length;
-    if (solvedAll) { fireConfetti(); await submitSolve(true, store.solve.attempts); return; }
-    if (store.solve.attempts >= 6) { await submitSolve(false, store.solve.attempts); return; }
+    if (solvedAll || store.solve.attempts >= 6) {
+      // Lock the result BEFORE the network call: a failed RPC shows a Retry
+      // card that resubmits this exact result — attempts can never inflate.
+      store.solve.terminal = { solved: solvedAll, guesses: store.solve.attempts };
+      if (solvedAll) fireConfetti();
+      await submitSolve(solvedAll, store.solve.attempts);
+      return;
+    }
     store.solve.refocus = true;   // keep the keyboard up between guesses
     store.solve.wrong = true; render();
     setTimeout(() => { store.solve.wrong = false; render(); }, 420);
-    inFlight = false;   // more guesses to go — re-arm (submit paths leave it locked; round re-renders anyway)
+    inFlight = false;   // more guesses to go — re-arm
   };
   gr.onsubmit = (e) => { e.preventDefault(); submit(); };
   // Keep the keyboard up: first mount, mid-draft re-renders, and after each guess.
