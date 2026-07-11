@@ -197,6 +197,13 @@ input {
 }
 .round-result { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--ink-soft); white-space: nowrap; }
 .wait-host { text-align: center; color: var(--muted); font-size: 14px; font-weight: 500; }
+.terms-note { text-align: center; color: var(--faint); font-size: 11px; font-weight: 500; margin-top: 4px; line-height: 1.5; }
+.terms-note a { color: var(--accent); }
+.report-btn {
+  display: block; margin: 4px auto 0; background: none; color: var(--muted);
+  font-size: 13px; font-weight: 600; padding: 6px 10px;
+}
+.report-btn:disabled { color: var(--green); }
 
 /* Wait / status cards */
 .wait { text-align: center; }

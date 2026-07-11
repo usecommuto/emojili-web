@@ -16,6 +16,20 @@ const AVATAR_COLORS = [0x6C5CE0, 0xF0A73B, 0x3FA36B, 0x5B8DEF, 0xC4536E, 0xE0679
 // Canonical scoring constants — mirror RoomScoring (Swift) and the server RPCs.
 const ENCODER_POINTS_PER_SOLVER = 40;
 
+// Client-side content pre-check (server `moderate_text` is authoritative).
+const MOD_TERMS = [
+  ["fuck", 0], ["shit", 0], ["bitch", 0], ["cunt", 1], ["asshole", 0], ["dick", 1],
+  ["cock", 1], ["pussy", 0], ["slut", 0], ["whore", 0], ["nigger", 0], ["nigga", 0],
+  ["faggot", 0], ["fag", 1], ["retard", 0], ["kike", 1], ["spic", 1], ["chink", 0],
+  ["coon", 1], ["tranny", 0], ["rape", 1], ["rapist", 1], ["nazi", 0], ["kys", 1],
+  ["cum", 1], ["twat", 0],
+];
+function isClean(text) {
+  const norm = " " + (text || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() + " ";
+  return !MOD_TERMS.some(([t, whole]) => whole ? norm.includes(` ${t} `) : norm.includes(t));
+}
+const MOD_REJECTION = "Let's keep it friendly — please try different wording.";
+
 // =====================================================================
 // Grading — byte-for-byte match with PhraseSolver + HashedAnswer (Swift)
 // =====================================================================
@@ -121,9 +135,11 @@ async function rpc(fn, params) {
 }
 function friendly(e) {
   const m = (e?.message || "").toLowerCase();
+  if (m.includes("blocked content")) return MOD_REJECTION;
   if (m.includes("room not found")) return "No room with that code.";
   if (m.includes("room full")) return "That room is full.";
   if (m.includes("already started")) return "That game has already started.";
+  if (m.includes("2 players")) return "You need at least 2 players to start.";
   if (m.includes("anonymous")) return "Guest sign-in is off — ask the host.";
   return "Something went wrong. Try again.";
 }
@@ -139,6 +155,7 @@ async function ensureAuth() {
 async function join() {
   store.busy = true; store.error = ""; render();
   try {
+    if (!isClean(store.name)) { store.error = MOD_REJECTION; store.busy = false; render(); return; }
     await ensureAuth();
     store.code = cleanCode(store.code);
     applyState(await rpc("join_room", { p_code: store.code, p_display_name: store.name.trim() || "Player", p_color: store.color }));
@@ -389,6 +406,15 @@ function joinScreen() {
   form.append(btn);
 
   if (store.error) form.append(el("p", "err", store.error));
+
+  // Terms acceptance + rules (Guideline 1.2).
+  const terms = el("div", "terms-note");
+  terms.innerHTML =
+    'By joining you agree to our <a href="./terms.html" target="_blank" rel="noopener">Terms</a> ' +
+    '(no objectionable content or abuse) &amp; ' +
+    '<a href="./privacy.html" target="_blank" rel="noopener">Privacy Policy</a>.';
+  form.append(terms);
+
   c.append(form);
   s.append(c);
   // set initial button label/disabled
@@ -605,6 +631,22 @@ function endedPanel() {
   c.append(list);
 
   if (!isHost()) c.append(el("div", "sub wait-host", `Waiting for ${hostName()}…`));
+
+  // Guideline 1.2: report an objectionable authored puzzle.
+  if (r.source === "authored" && r.encoder_id && r.encoder_id !== store.myId) {
+    const rep = el("button", "report-btn", "⚑ Report this puzzle");
+    let done = false;
+    rep.onclick = async () => {
+      if (done) return; done = true;
+      try {
+        await rpc("report_content", { p_kind: "room_round", p_ref: r.id, p_reported_user: r.encoder_id,
+                                      p_reason: "puzzle report", p_snapshot: `${r.emojis || ""} ${r.answer || ""}` });
+      } catch {}
+      rep.textContent = "Thanks — we'll review this.";
+      rep.disabled = true;
+    };
+    c.append(rep);
+  }
   return c;
 }
 
@@ -640,9 +682,14 @@ function authorPanel() {
   const btn = el("button", "btn-primary", "Send to the room");
   const upd = () => { btn.disabled = store.busy || !ei.value.trim() || !ai.value.trim(); };
   ei.oninput = upd; ai.oninput = upd; upd();
+  const modErr = el("p", "err"); modErr.style.display = "none"; c.append(modErr);
   let sent = false;   // double-tap guard before busy propagates
   btn.onclick = () => {
     if (sent) return;
+    if (!isClean(ei.value) || !isClean(ai.value)) {
+      modErr.textContent = MOD_REJECTION; modErr.style.display = "block"; return;
+    }
+    modErr.style.display = "none";
     sent = true; btn.disabled = true; btn.textContent = "Sending…";
     submitAuthored(ei.value.trim(), ai.value.trim());
   };
