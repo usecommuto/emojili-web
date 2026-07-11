@@ -1,0 +1,26 @@
+/* Shared styling for Emojili legal pages — matches the app's Clean & Bold palette. */
+:root {
+  --accent: #6C5CE0; --ink: #17181F; --muted: #6b6b73; --bg: #FBFBFD; --card: #fff; --border: #ECECF2;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg); color: var(--ink); margin: 0; line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+}
+.wrap { max-width: 720px; margin: 0 auto; padding: 32px 22px 80px; }
+.brand { font-size: 24px; font-weight: 800; letter-spacing: -0.6px; margin-bottom: 4px; }
+.brand .dot { color: var(--accent); }
+h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; margin: 18px 0 4px; }
+.updated { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+h2 { font-size: 19px; font-weight: 800; margin: 30px 0 8px; }
+p, li { font-size: 16px; color: #2b2b33; }
+ul { padding-left: 22px; }
+a { color: var(--accent); }
+.note { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 16px 18px; margin: 18px 0; }
+.foot { margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--border); font-size: 14px; color: var(--muted); }
+.foot a { margin-right: 16px; }
+@media (prefers-color-scheme: dark) {
+  :root { --ink: #f3f3f5; --bg: #131318; --card: #1c1c22; --border: #2a2a31; --muted: #9a9aa2; }
+  p, li { color: #d8d8de; }
+}
