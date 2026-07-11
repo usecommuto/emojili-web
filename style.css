@@ -94,6 +94,18 @@ input {
 .field.big input { font-size: 28px; font-weight: 700; text-align: center; }
 .field input::placeholder { color: var(--faint); font-weight: 500; }
 
+/* Field labels + room chip (join screen) */
+.field-label {
+  font-size: 12px; font-weight: 800; letter-spacing: 1px;
+  color: var(--muted); text-transform: uppercase; margin: 0 0 6px 4px; text-align: left;
+}
+.room-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent-tint); color: var(--accent);
+  font-weight: 800; letter-spacing: 5px; font-size: 24px;
+  padding: 12px 24px; border-radius: 14px;
+}
+
 /* Avatar */
 .avatar {
   border-radius: 50%; color: #fff; font-weight: 800;

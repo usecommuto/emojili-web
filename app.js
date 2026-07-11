@@ -227,53 +227,83 @@ function render() {
 
 // ---- Join / name entry ----
 function joinScreen() {
+  // Self-heal: an earlier ambiguous UI could save the room code AS the name.
+  if (store.name && store.code && store.name.toUpperCase() === store.code) {
+    store.name = ""; localStorage.removeItem("emojili-web-name");
+  }
+
   const s = el("div", "screen");
   s.append(topbar());
   const c = el("div", "center");
 
-  const beer = el("div", null, "🍻"); beer.style.fontSize = "64px"; c.append(beer);
-  const h = el("h1", null, store.code ? "Join the Pub Round" : "Enter a room code");
+  const beer = el("div", null, "🍻"); beer.style.fontSize = "60px"; c.append(beer);
+  const h = el("h1", null, "Join the Pub Round");
   h.style.cssText = "font-size:26px;font-weight:800;letter-spacing:-0.5px;";
   c.append(h);
-  const sub = el("p", "muted", store.code ? `Room ${store.code} · pick a name to play` : "Ask the host for the 4-letter code");
-  sub.style.fontSize = "15px";
-  c.append(sub);
 
   const form = el("div", "stack");
-  form.style.cssText = "width:100%;max-width:340px;margin-top:8px;";
+  form.style.cssText = "width:100%;max-width:340px;margin-top:4px;gap:16px;";
 
-  if (!store.code) {
+  // Room code: a read-only chip when it came from the QR/URL, else an input.
+  if (store.code) {
+    const g = el("div"); g.style.textAlign = "center";
+    g.append(el("div", "field-label", "Room"));
+    const chip = el("div", "room-chip", store.code); chip.style.margin = "0 auto";
+    g.append(chip);
+    form.append(g);
+  } else {
+    const g = el("div");
+    g.append(el("div", "field-label", "Room code"));
     const codeField = el("label", "field");
-    const ci = el("input"); ci.placeholder = "ROOM CODE"; ci.maxLength = 6; ci.value = store.code;
+    const ci = el("input"); ci.placeholder = "e.g. WU8DV"; ci.maxLength = 6; ci.value = store.code;
+    ci.autocapitalize = "characters"; ci.autocomplete = "off"; ci.autocorrect = "off";
     ci.style.cssText = "text-transform:uppercase;letter-spacing:4px;font-weight:800;text-align:center;";
-    ci.oninput = () => { store.code = cleanCode(ci.value); ci.value = store.code; };
-    codeField.append(ci); form.append(codeField);
+    ci.oninput = () => { store.code = cleanCode(ci.value); ci.value = store.code; refreshJoinBtn(); };
+    codeField.append(ci); g.append(codeField); form.append(g);
   }
 
+  // Your name
+  const ng = el("div");
+  ng.append(el("div", "field-label", "Your name"));
   const nameField = el("label", "field");
-  const ni = el("input"); ni.placeholder = "Your name"; ni.maxLength = 16; ni.value = store.name;
-  ni.oninput = () => { store.name = ni.value; localStorage.setItem("emojili-web-name", ni.value); };
-  nameField.append(ni); form.append(nameField);
+  const ni = el("input"); ni.placeholder = "Type your name"; ni.maxLength = 16; ni.value = store.name;
+  ni.autocomplete = "off";
+  ni.oninput = () => { store.name = ni.value; localStorage.setItem("emojili-web-name", ni.value); refreshJoinBtn(); };
+  nameField.append(ni); ng.append(nameField); form.append(ng);
 
-  // Color picker
-  const colors = el("div"); colors.style.cssText = "display:flex;gap:10px;justify-content:center;flex-wrap:wrap;";
+  // Colour
+  const cg = el("div");
+  cg.append(el("div", "field-label", "Your colour"));
+  const colors = el("div"); colors.style.cssText = "display:flex;gap:10px;justify-content:flex-start;flex-wrap:wrap;";
   AVATAR_COLORS.forEach((col) => {
     const dot = el("button"); dot.style.cssText = `width:34px;height:34px;border-radius:50%;background:${hex6(col)};transition:transform .1s;`;
-    if (col === store.color) dot.style.outline = "3px solid var(--ink)", dot.style.outlineOffset = "2px";
+    if (col === store.color) { dot.style.outline = "3px solid var(--ink)"; dot.style.outlineOffset = "2px"; }
     dot.onclick = () => { store.color = col; localStorage.setItem("emojili-web-color", String(col)); render(); };
     colors.append(dot);
   });
-  form.append(colors);
+  cg.append(colors); form.append(cg);
 
-  const btn = el("button", "btn-primary", store.busy ? "Joining…" : "Join room");
-  btn.disabled = store.busy || !store.name.trim() || !store.code.trim();
-  btn.onclick = join;
+  const btn = el("button", "btn-primary");
+  btn.id = "joinBtn"; btn.onclick = join;
   form.append(btn);
 
   if (store.error) form.append(el("p", "err", store.error));
   c.append(form);
   s.append(c);
+  // set initial button label/disabled
+  setTimeout(refreshJoinBtn, 0);
   return s;
+}
+
+// Keep the Join button's label + enabled state in sync without a full re-render
+// (so typing never steals focus from the field).
+function refreshJoinBtn() {
+  const btn = document.getElementById("joinBtn");
+  if (!btn) return;
+  const hasCode = !!store.code.trim();
+  const hasName = !!store.name.trim();
+  btn.disabled = store.busy || !hasCode || !hasName;
+  btn.textContent = store.busy ? "Joining…" : (!hasCode ? "Enter a room code" : (!hasName ? "Enter your name" : "Join room"));
 }
 
 // ---- Lobby ----
