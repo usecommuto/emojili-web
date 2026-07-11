@@ -144,13 +144,26 @@ async function join() {
   store.busy = false; render();
 }
 
+let refreshFails = 0;
 async function refresh() {
   const id = room()?.id;
   if (!id) return;
   try {
     const fresh = await rpc("room_snapshot", { p_room: id });
+    refreshFails = 0;
     if (fresh) { store.state = fresh; onStateChanged(); render(); }
-  } catch { /* transient */ }
+  } catch {
+    // Repeated failures = the room was deleted (host closed it).
+    // Stop polling a corpse and tell the player instead of hanging forever.
+    if (++refreshFails >= 3) {
+      refreshFails = 0;
+      stopPolling();
+      if (store.channel) { supabase.removeChannel(store.channel); store.channel = null; }
+      store.state = null; store.lastRoundId = null; store.celebrated = false;
+      store.error = "That room was closed by the host.";
+      render();
+    }
+  }
 }
 
 async function subscribe() {
