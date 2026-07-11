@@ -137,6 +137,7 @@ async function join() {
     store.code = cleanCode(store.code);
     store.state = await rpc("join_room", { p_code: store.code, p_display_name: store.name.trim() || "Player", p_color: store.color });
     await subscribe();
+    startPolling();
   } catch (e) {
     store.error = friendly(e);
   }
@@ -156,15 +157,50 @@ async function subscribe() {
   const id = room()?.id;
   if (!id) return;
   if (store.channel) { await supabase.removeChannel(store.channel); store.channel = null; }
-  const ch = supabase.channel(`room-${id}`);
+  const ch = supabase.channel(`room-${id}-${Date.now()}`);
   const bump = () => refresh();
   ch.on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: `id=eq.${id}` }, bump)
     .on("postgres_changes", { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${id}` }, bump)
     .on("postgres_changes", { event: "*", schema: "public", table: "room_rounds", filter: `room_id=eq.${id}` }, bump)
-    .on("postgres_changes", { event: "*", schema: "public", table: "round_solves" }, bump)
-    .subscribe();
+    .on("postgres_changes", { event: "*", schema: "public", table: "round_solves", filter: `room_id=eq.${id}` }, bump)
+    .subscribe((status) => {
+      // Mobile browsers kill sockets on suspend — rebuild the channel on failure.
+      if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) scheduleResubscribe();
+    });
   store.channel = ch;
 }
+
+let resubPending = false;
+function scheduleResubscribe() {
+  if (resubPending || !store.state) return;
+  resubPending = true;
+  setTimeout(async () => {
+    resubPending = false;
+    if (!store.state) return;
+    await subscribe();
+    await refresh();
+  }, 2000);
+}
+
+// Poll as a safety net: realtime can silently die; a 5s snapshot keeps everyone honest.
+let pollTimer = null;
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(() => { if (store.state) refresh(); }, 5000);
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+// Tab returns from background → snapshot + fresh channel immediately.
+async function onVisible() {
+  if (document.visibilityState !== "visible" || !store.state) return;
+  await refresh();
+  await subscribe();
+}
+document.addEventListener("visibilitychange", onVisible);
+window.addEventListener("focus", onVisible);
+window.addEventListener("pageshow", onVisible);
 
 // Reset per-round solve state when the live round changes.
 function onStateChanged() {
@@ -176,7 +212,8 @@ function onStateChanged() {
   }
   if (room()?.status === "finished" && !store.celebrated) {
     store.celebrated = true;
-    if (me() && me() === store.state.members[0]) fireConfetti();
+    const top = [...members()].sort((a, b) => b.score - a.score)[0];
+    if (top?.user_id === store.myId) fireConfetti();
   }
 }
 
@@ -194,6 +231,7 @@ async function act(work) {
 }
 
 async function leave() {
+  stopPolling();
   try { if (room()?.id) await rpc("leave_room", { p_room: room().id }); } catch {}
   if (store.channel) { await supabase.removeChannel(store.channel); store.channel = null; }
   store.state = null; store.lastRoundId = null; store.celebrated = false;
@@ -384,11 +422,24 @@ function playScreen() {
   s.append(body);
   s.append(el("div", "spacer"));
 
-  // host controls
-  if (isHost() && round()?.status === "active") {
+  // host controls: force-end while active, advance once ended
+  const rst = round()?.status;
+  if (isHost() && (rst === "active" || rst === "ended")) {
     const last = room().current_round >= room().total_rounds;
-    const btn = el("button", "btn-primary", store.busy ? "…" : (last ? "Finish game" : "Next round"));
-    btn.disabled = store.busy; btn.onclick = advance;
+    let label, style;
+    if (rst === "active") { label = "End round early"; style = "btn-outline"; }
+    else { label = last ? "Finish game" : "Next round"; style = "btn-primary"; }
+    const btn = el("button", style, store.busy ? "…" : label);
+    btn.disabled = store.busy;
+    btn.onclick = () => {
+      if (rst === "active") {
+        const r = round();
+        const eligible = members().filter((m) => m.alive && m.user_id !== r.encoder_id);
+        const pending = eligible.filter((m) => !r.solves?.some((s) => s.user_id === m.user_id));
+        if (pending.length && !window.confirm(`${pending.length} player${pending.length === 1 ? " is" : "s are"} still solving — end the round anyway?`)) return;
+      }
+      advance();
+    };
     btn.style.marginTop = "12px";
     s.append(btn);
   }
@@ -423,10 +474,73 @@ function panel() {
   if (r.status === "active") {
     if (iAmEncoder()) return waitCard("👀", "Your puzzle is live", `Watch everyone try to crack ${r.emojis || ""}.`);
     const sv = mySolve();
-    if (sv) return waitCard(sv.solved ? "✅" : "🙈", sv.solved ? `Nice — +${sv.points}!` : "Out this round", "Waiting for the others to finish.");
+    if (sv) {
+      // Everyone else done too? Tell the player who they're waiting on.
+      const eligible = members().filter((m) => m.alive && m.user_id !== r.encoder_id);
+      const allDone = eligible.every((m) => r.solves?.some((s) => s.user_id === m.user_id));
+      const sub = allDone ? `Waiting for ${hostName()} to continue.` : "Waiting for the others to finish.";
+      return waitCard(sv.solved ? "✅" : "🙈", sv.solved ? `Nice — +${sv.points}!` : "Out this round", sub);
+    }
     return solvePanel();
   }
-  return waitCard("⏳", "Round over", "");
+  return endedPanel();
+}
+
+function hostName() {
+  const h = members().find((m) => m.user_id === room()?.host_id);
+  return h ? (h.user_id === store.myId ? "you" : h.display_name) : "the host";
+}
+
+// Round-end interstitial: the answer, everyone's result, encoder award.
+function endedPanel() {
+  const r = round();
+  const c = el("div", "card stack round-end");
+
+  const head = el("div", "wait");
+  head.append(el("div", "big-emoji", r.emojis || "🎉"));
+  head.append(el("div", "sub", "The answer was"));
+  const ans = el("div", "answer-reveal", (r.answer || "—").toUpperCase());
+  head.append(ans);
+  c.append(head);
+
+  // Per-player results
+  const list = el("div");
+  const medals = ["🥇", "🥈", "🥉"];
+  members().filter((m) => m.user_id !== r.encoder_id).forEach((m) => {
+    const sv = r.solves?.find((s) => s.user_id === m.user_id);
+    const row = el("div", "member-row");
+    row.append(avatarEl(m.display_name, m.avatar_color, 34));
+    row.append(el("span", "name", m.display_name + (m.user_id === store.myId ? " (you)" : "")));
+    const right = el("span", "round-result");
+    if (sv?.solved) {
+      const medal = room().mode === "race" && sv.placement && sv.placement <= 3 ? medals[sv.placement - 1] + " " : "";
+      right.textContent = `${medal}✅ ${sv.guesses} guess${sv.guesses === 1 ? "" : "es"} · +${sv.points}`;
+    } else if (sv) {
+      right.textContent = "❌ +0";
+    } else {
+      right.textContent = "—";
+    }
+    row.append(right);
+    list.append(row);
+  });
+  // Encoder award
+  if (r.encoder_id) {
+    const enc = members().find((m) => m.user_id === r.encoder_id);
+    const solvers = (r.solves || []).filter((s) => s.solved).length;
+    if (enc) {
+      const row = el("div", "member-row");
+      row.append(avatarEl(enc.display_name, enc.avatar_color, 34));
+      row.append(el("span", "name", enc.display_name + " ✍️"));
+      const right = el("span", "round-result");
+      right.textContent = `+${40 * solvers} encoder`;
+      row.append(right);
+      list.append(row);
+    }
+  }
+  c.append(list);
+
+  if (!isHost()) c.append(el("div", "sub wait-host", `Waiting for ${hostName()}…`));
+  return c;
 }
 
 function encoderName() {
@@ -459,9 +573,14 @@ function authorPanel() {
   af.append(ai); c.append(af);
 
   const btn = el("button", "btn-primary", "Send to the room");
-  const upd = () => { btn.disabled = !ei.value.trim() || !ai.value.trim(); };
+  const upd = () => { btn.disabled = store.busy || !ei.value.trim() || !ai.value.trim(); };
   ei.oninput = upd; ai.oninput = upd; upd();
-  btn.onclick = () => submitAuthored(ei.value.trim(), ai.value.trim());
+  let sent = false;   // double-tap guard before busy propagates
+  btn.onclick = () => {
+    if (sent) return;
+    sent = true; btn.disabled = true; btn.textContent = "Sending…";
+    submitAuthored(ei.value.trim(), ai.value.trim());
+  };
   c.append(btn);
   return c;
 }
@@ -501,9 +620,12 @@ function solvePanel() {
 
   c.append(el("div", "guesses-left", `${6 - store.solve.attempts} guesses left`));
 
+  let inFlight = false;   // guard: Enter-key repeats can't double-submit
   const submit = async () => {
+    if (inFlight) return;
     const g = (store.solve.draft || "").trim();
     if (!g || !wh.length) return;
+    inFlight = true;
     const { marks, correct, raw } = await grade(g, wh, salt);
     store.solve.attempts += 1;
     store.solve.marks = marks;
@@ -514,6 +636,7 @@ function solvePanel() {
     if (store.solve.attempts >= 6) { await submitSolve(false, store.solve.attempts); return; }
     store.solve.wrong = true; render();
     setTimeout(() => { store.solve.wrong = false; render(); }, 420);
+    inFlight = false;   // more guesses to go — re-arm (submit paths leave it locked; round re-renders anyway)
   };
   send.onclick = submit;
   gi.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });

@@ -185,6 +185,19 @@ input {
 }
 .card.wrong { border-color: var(--danger); }
 
+/* Round-end interstitial */
+.round-end { animation: cardIn .35s cubic-bezier(.2,.9,.3,1.2); }
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(14px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+.answer-reveal {
+  font-size: 26px; font-weight: 800; letter-spacing: 2px;
+  color: var(--accent); margin-top: 6px; text-align: center;
+}
+.round-result { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--ink-soft); white-space: nowrap; }
+.wait-host { text-align: center; color: var(--muted); font-size: 14px; font-weight: 500; }
+
 /* Wait / status cards */
 .wait { text-align: center; }
 .wait .big-emoji { font-size: 46px; }
