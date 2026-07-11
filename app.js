@@ -609,13 +609,16 @@ function solvePanel() {
     c.append(mk);
   }
 
-  const gr = el("div", "guess-row");
+  // A real <form> so Enter and the mobile keyboard's "Go" both submit reliably.
+  const gr = el("form", "guess-row");
   const gf = el("label", "field"); gf.style.flex = "1";
   const gi = el("input"); gi.placeholder = "Type your guess"; gi.autocapitalize = "none"; gi.autocorrect = "off";
+  gi.enterKeyHint = "go";
   gi.value = store.solve.draft || "";                 // survive realtime re-renders
   gi.oninput = () => { store.solve.draft = gi.value; };
   gf.append(gi); gr.append(gf);
   const send = el("button", "guess-send", "⬆");
+  send.type = "submit";
   gr.append(send); c.append(gr);
 
   c.append(el("div", "guesses-left", `${6 - store.solve.attempts} guesses left`));
@@ -639,8 +642,7 @@ function solvePanel() {
     setTimeout(() => { store.solve.wrong = false; render(); }, 420);
     inFlight = false;   // more guesses to go — re-arm (submit paths leave it locked; round re-renders anyway)
   };
-  send.onclick = submit;
-  gi.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  gr.onsubmit = (e) => { e.preventDefault(); submit(); };
   // Keep the keyboard up: first mount, mid-draft re-renders, and after each guess.
   if (store.solve.draft || store.solve.attempts === 0 || store.solve.refocus) {
     store.solve.refocus = false;
