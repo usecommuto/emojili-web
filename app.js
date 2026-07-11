@@ -634,14 +634,16 @@ function solvePanel() {
     const solvedAll = slots.length > 0 && Object.keys(store.solve.revealed).length === slots.length;
     if (solvedAll) { fireConfetti(); await submitSolve(true, store.solve.attempts); return; }
     if (store.solve.attempts >= 6) { await submitSolve(false, store.solve.attempts); return; }
+    store.solve.refocus = true;   // keep the keyboard up between guesses
     store.solve.wrong = true; render();
     setTimeout(() => { store.solve.wrong = false; render(); }, 420);
     inFlight = false;   // more guesses to go — re-arm (submit paths leave it locked; round re-renders anyway)
   };
   send.onclick = submit;
   gi.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
-  // Restore focus + caret only if the user was already typing here.
-  if (store.solve.draft || store.solve.attempts === 0) {
+  // Keep the keyboard up: first mount, mid-draft re-renders, and after each guess.
+  if (store.solve.draft || store.solve.attempts === 0 || store.solve.refocus) {
+    store.solve.refocus = false;
     setTimeout(() => { gi.focus(); const n = gi.value.length; gi.setSelectionRange(n, n); }, 20);
   }
   return c;
