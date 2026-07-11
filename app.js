@@ -60,6 +60,9 @@ async function grade(guess, wordHashes, salt) {
 // =====================================================================
 // Helpers
 // =====================================================================
+// Room codes are alphanumeric — strip spaces/punctuation a keyboard may inject
+// so join_room's exact `upper(code)=upper(p_code)` match never misses.
+const cleanCode = (s) => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 const hex6 = (n) => "#" + (Math.max(0, n) >>> 0).toString(16).padStart(6, "0").slice(-6);
 function initials(name) {
@@ -85,7 +88,7 @@ const store = {
   channel: null,
   name: localStorage.getItem("emojili-web-name") || "",
   color: Number(localStorage.getItem("emojili-web-color")) || AVATAR_COLORS[0],
-  code: (location.hash.replace(/^#\/?/, "").trim() || "").toUpperCase(),
+  code: cleanCode(location.hash.replace(/^#\/?/, "")),
   busy: false,
   error: "",
   // per-round solve UI state
@@ -131,7 +134,8 @@ async function join() {
   store.busy = true; store.error = ""; render();
   try {
     await ensureAuth();
-    store.state = await rpc("join_room", { p_code: store.code, p_display_name: store.name, p_color: store.color });
+    store.code = cleanCode(store.code);
+    store.state = await rpc("join_room", { p_code: store.code, p_display_name: store.name.trim() || "Player", p_color: store.color });
     await subscribe();
   } catch (e) {
     store.error = friendly(e);
@@ -242,7 +246,7 @@ function joinScreen() {
     const codeField = el("label", "field");
     const ci = el("input"); ci.placeholder = "ROOM CODE"; ci.maxLength = 6; ci.value = store.code;
     ci.style.cssText = "text-transform:uppercase;letter-spacing:4px;font-weight:800;text-align:center;";
-    ci.oninput = () => { store.code = ci.value.toUpperCase(); };
+    ci.oninput = () => { store.code = cleanCode(ci.value); ci.value = store.code; };
     codeField.append(ci); form.append(codeField);
   }
 
@@ -554,7 +558,7 @@ function fireConfetti() {
 
 // ---- Boot ----
 window.addEventListener("hashchange", () => {
-  const c = (location.hash.replace(/^#\/?/, "").trim() || "").toUpperCase();
+  const c = cleanCode(location.hash.replace(/^#\/?/, ""));
   if (c && !store.state) { store.code = c; render(); }
 });
 render();
